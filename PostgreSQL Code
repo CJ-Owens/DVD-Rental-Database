@@ -1,0 +1,132 @@
+-- SECTION B: Transform one field in the detailed_report
+-- combine_name concatenates the first and last name of the employees from staff into full_name
+
+DROP FUNCTION IF EXISTS combine_name;
+CREATE OR REPLACE FUNCTION combine_name(staff_num int)
+  RETURNS varchar(60)
+  LANGUAGE plpgsql
+  AS
+  $name$
+  DECLARE
+    full_name varchar(60);
+  BEGIN
+    SELECT CONCAT(s.first_name||' '||s.last_name) 
+    INTO full_name
+    FROM staff AS s
+    WHERE s.staff_id = staff_num;
+
+  RETURN full_name;
+END;
+$name$;
+
+-- SECTION C: Create detailed_report table
+
+DROP TABLE IF EXISTS detailed_report;
+CREATE TABLE detailed_report (
+    staff_id smallint,
+    full_name varchar(60),
+    store_id smallint,
+    payment_amounts numeric(5,2),
+    active bool
+);
+
+-- SECTION C: Create summary_report table
+
+DROP TABLE IF EXISTS summary_report;
+CREATE TABLE summary_report (
+    staff_id smallint,
+    staff_name varchar(60),
+    total_sales numeric(7,2)
+);
+
+-- SECTION D: Extract data from source database and insert into detail_report
+-- This insert calls the combine_name function to transform the first_name and last_name into full_name
+-- Insert also checks that the employee is active
+
+INSERT INTO detailed_report (
+    staff_id, 
+    full_name,
+    store_id, 
+    payment_amounts,
+    active
+)
+SELECT s.staff_id, 
+    combine_name(s.staff_id) AS full_name,
+    store_id, 
+    amount,
+    active 
+FROM staff s, payment p
+WHERE p.staff_id = s.staff_id
+AND active;
+
+-- SECTION E: Create trigger on detailed_report to update summary_report
+-- The summary_update trigger will refresh the summary_report through the use of the sales_by_staff() function
+
+CREATE OR REPLACE FUNCTION sales_by_staff()
+  RETURNS TRIGGER 
+
+  AS
+  $$
+  BEGIN 
+    DELETE FROM summary_report;
+    INSERT INTO summary_report (staff_id, staff_name, total_sales)
+    SELECT staff_id,
+         full_name,
+         sum(payment_amounts)
+    FROM detailed_report
+    GROUP BY staff_id, full_name; 
+
+  RETURN new; 
+END;
+$$
+LANGUAGE PLPGSQL;
+
+-- SECTION E continued: Create trigger on detailed_report to update summary_report
+-- The summary_update trigger will refresh the summary_report through the use of the sales_by_staff() function
+
+CREATE TRIGGER summary_update
+AFTER INSERT ON detailed_report
+FOR EACH STATEMENT
+EXECUTE PROCEDURE sales_by_staff();
+
+--Section F: report_refresh() will refresh the data in the detailed_report
+--The summary_report will be updated by the trigger summary_update on any statement change in detailed_report
+--The report_refresh() procedure is to be called by external tool.
+
+CREATE OR REPLACE PROCEDURE report_refresh()
+  LANGUAGE PLPGSQL
+  AS
+  $refresh$
+  BEGIN
+    DELETE FROM detailed_report;
+    INSERT INTO detailed_report (
+        staff_id, 
+        full_name,
+        store_id, 
+        payment_amounts,
+        active
+    )
+    SELECT s.staff_id, 
+        combine_name(s.staff_id) AS full_name,
+        store_id, 
+        amount,
+        active 
+    FROM staff s, payment p
+    WHERE p.staff_id = s.staff_id
+    AND active = true;
+END;
+$refresh$;
+
+-- Call refresh_report function to check functionality of procedure and trigger
+
+CALL report_refresh();
+
+-- Query the detailed_report and summary_report to view results
+
+--SELECT * FROM detailed_report;
+--SELECT * FROM summary_report;
+
+-- Check the aggregated data of detailed_table against raw data
+
+-- SELECT staff_id, first_name, last_name, store_id, active FROM staff;
+-- SELECT staff_id, amount FROM payment;
